@@ -1,6 +1,8 @@
 
 #include <ego_planner/ego_replan_fsm.h>
 
+#include <cmath>
+
 namespace ego_planner
 {
 
@@ -204,18 +206,15 @@ namespace ego_planner
       have_target_ = true;
       have_new_target_ = true;
 
-      /*** FSM状态转换 ***/
+      // This callback runs on the node's executor. Spinning or waiting here
+      // prevents the FSM timer from advancing and, with rclcpp, attempts to
+      // add the same node to a second executor. Targets received while a plan
+      // is already being generated only need to update end_pt_; the next FSM
+      // timer iteration will consume the latest target via have_new_target_.
       if (exec_state_ == WAIT_TARGET)
         changeFSMExecState(GEN_NEW_TRAJ, "TRIG");
-      else
-      {
-        while (exec_state_ != EXEC_TRAJ)
-        {
-          rclcpp::spin_some(node_);
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+      else if (exec_state_ == EXEC_TRAJ)
         changeFSMExecState(REPLAN_TRAJ, "TRIG");
-      }
 
       visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
     }
@@ -234,14 +233,17 @@ namespace ego_planner
 
   void EGOReplanFSM::waypointCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg)
   {
-    if (msg->pose.position.z < -0.1)
+    if (!std::isfinite(msg->pose.position.x) ||
+        !std::isfinite(msg->pose.position.y) ||
+        !std::isfinite(msg->pose.position.z))
       return;
 
     cout << "Triggered!" << endl;
 
     init_pt_ = odom_pos_;
 
-    Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y, 1.0);
+    Eigen::Vector3d end_wp(
+        msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
 
     planNextWaypoint(end_wp);
   }
@@ -467,7 +469,9 @@ namespace ego_planner
 
     static int fsm_num = 0;
     fsm_num++;
-    if (fsm_num == 100)
+    // Keep idle diagnostics useful without flooding an interactive mission
+    // terminal while monocular odometry is still initializing.
+    if (fsm_num == 500)
     {
       printFSMExecState();
       if (!have_odom_)

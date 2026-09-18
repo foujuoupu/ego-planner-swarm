@@ -267,6 +267,13 @@ void GridMap::projectDepthImage()
   int cols = md_.depth_image_.cols;
   int rows = md_.depth_image_.rows;
   int skip_pix = mp_.skip_pixel_;
+  const size_t required_points =
+      static_cast<size_t>((rows + skip_pix - 1) / skip_pix) *
+      static_cast<size_t>((cols + skip_pix - 1) / skip_pix);
+  if (md_.proj_points_.size() < required_points)
+  {
+    md_.proj_points_.resize(required_points);
+  }
 
   double depth;
 
@@ -317,14 +324,15 @@ void GridMap::projectDepthImage()
              u += mp_.skip_pixel_)
         {
 
-          depth = (*row_ptr) * inv_factor;
+          const uint16_t raw_depth = *row_ptr;
+          depth = raw_depth * inv_factor;
           row_ptr = row_ptr + mp_.skip_pixel_;
 
           // filter depth
           // depth += rand_noise_(eng_);
           // if (depth > 0.01) depth += rand_noise2_(eng_);
 
-          if (*row_ptr == 0)
+          if (raw_depth == 0)
           {
             depth = mp_.max_ray_length_ + 0.1;
           }

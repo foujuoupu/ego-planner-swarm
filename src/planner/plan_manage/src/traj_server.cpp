@@ -5,6 +5,8 @@
 #include "std_msgs/msg/empty.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include <rclcpp/rclcpp.hpp>
+#include <string>
+#include <utility>
 
 rclcpp::Publisher<quadrotor_msgs::msg::PositionCommand>::SharedPtr pos_cmd_pub;
 
@@ -23,6 +25,8 @@ int traj_id_;
 // yaw control
 double last_yaw_, last_yaw_dot_;
 double time_forward_;
+bool track_yaw_;
+std::string command_frame_id_;
 
 void bsplineCallback(traj_utils::msg::Bspline::ConstPtr msg)
 {
@@ -181,9 +185,10 @@ void cmdCallback()
     vel = traj_[1].evaluateDeBoorT(t_cur);
     acc = traj_[2].evaluateDeBoorT(t_cur);
 
-    /*** calculate yaw ***/
-    yaw_yawdot = calculate_yaw(t_cur, pos, time_now, time_last);
-    /*** calculate yaw ***/
+    if (track_yaw_)
+      yaw_yawdot = calculate_yaw(t_cur, pos, time_now, time_last);
+    else
+      yaw_yawdot = std::make_pair(last_yaw_, 0.0);
 
     double tf = min(traj_duration_, t_cur + 2.0);
     pos_f = traj_[0].evaluateDeBoorT(tf);
@@ -207,7 +212,7 @@ void cmdCallback()
   time_last = time_now;
 
   cmd.header.stamp = time_now;
-  cmd.header.frame_id = "world";
+  cmd.header.frame_id = command_frame_id_;
   cmd.trajectory_flag = quadrotor_msgs::msg::PositionCommand::TRAJECTORY_STATUS_READY;
   cmd.trajectory_id = traj_id_;
 
@@ -260,6 +265,10 @@ int main(int argc, char **argv)
 
   node->declare_parameter("traj_server/time_forward", -1.0);
   node->get_parameter("traj_server/time_forward", time_forward_);
+  node->declare_parameter("traj_server/track_yaw", true);
+  node->get_parameter("traj_server/track_yaw", track_yaw_);
+  node->declare_parameter("traj_server/command_frame_id", "world");
+  node->get_parameter("traj_server/command_frame_id", command_frame_id_);
 
   last_yaw_ = 0.0;
   last_yaw_dot_ = 0.0;
