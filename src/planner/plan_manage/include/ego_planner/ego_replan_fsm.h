@@ -85,6 +85,7 @@ namespace ego_planner
     rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
 
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_sub_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr rolling_goal_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_sub_;
     rclcpp::Subscription<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_sub_;
@@ -109,13 +110,14 @@ namespace ego_planner
     void printFSMExecState();
 
     void readGivenWps();
-    void planNextWaypoint(const Eigen::Vector3d next_wp);
+    void planNextWaypoint(const Eigen::Vector3d next_wp, const Eigen::Vector3d end_vel = Eigen::Vector3d::Zero());
     void getLocalTarget();
 
     /* ROS functions */
     void execFSMCallback();
     void checkCollisionCallback();
     void waypointCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
+    void rollingGoalCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg);
     void triggerCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
     void odometryCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg);
     void swarmTrajsCallback(const std::shared_ptr<const traj_utils::msg::MultiBsplines> &msg);

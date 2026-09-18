@@ -123,6 +123,12 @@ namespace ego_planner
           {
             this->waypointCallback(msg);
           });
+      rolling_goal_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
+          "/planning/rolling_goal", 1,
+          [this](const std::shared_ptr<const nav_msgs::msg::Odometry> &msg)
+          {
+            this->rollingGoalCallback(msg);
+          });
     }
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
@@ -185,10 +191,10 @@ namespace ego_planner
     planNextWaypoint(wps_[wp_id_]);
   }
 
-  void EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp)
+  void EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp, const Eigen::Vector3d target_vel)
   {
     bool success = false;
-    success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), next_wp, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), next_wp, target_vel, Eigen::Vector3d::Zero());
 
     if (success)
     {
@@ -202,7 +208,7 @@ namespace ego_planner
         gloabl_traj[i] = planner_manager_->global_data_.global_traj_.evaluate(i * step_size_t);
       }
 
-      end_vel_.setZero();
+      end_vel_ = target_vel;
       have_target_ = true;
       have_new_target_ = true;
 
@@ -246,6 +252,19 @@ namespace ego_planner
         msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
 
     planNextWaypoint(end_wp);
+  }
+
+  void EGOReplanFSM::rollingGoalCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg)
+  {
+    const auto &position = msg->pose.pose.position;
+    const auto &velocity = msg->twist.twist.linear;
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z) ||
+        !std::isfinite(velocity.x) || !std::isfinite(velocity.y) || !std::isfinite(velocity.z) ||
+        !have_odom_)
+      return;
+    init_pt_ = odom_pos_;
+    planNextWaypoint(Eigen::Vector3d(position.x, position.y, position.z),
+                     Eigen::Vector3d(velocity.x, velocity.y, velocity.z));
   }
 
   void EGOReplanFSM::odometryCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg)
@@ -973,7 +992,7 @@ namespace ego_planner
 
     if ((end_pt_ - local_target_pt_).norm() < (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / (2 * planner_manager_->pp_.max_acc_))
     {
-      local_target_vel_ = Eigen::Vector3d::Zero();
+      local_target_vel_ = end_vel_;
     }
     else
     {
