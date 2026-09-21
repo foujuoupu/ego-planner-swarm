@@ -11,7 +11,10 @@ namespace ego_planner
                                                 Eigen::Vector4d color, int id, bool show_sphere /* = true */)
   {
     visualization_msgs::msg::Marker sphere, line_strip;
-    sphere.header.frame_id = line_strip.header.frame_id = "world";
+    // The AirSim bringup runs EGO in the ORB-SLAM map frame.  Publishing
+    // markers in the old simulator-only "world" frame makes RViz discard
+    // them because no transform exists between the two frames.
+    sphere.header.frame_id = line_strip.header.frame_id = "orbslam_map";
     sphere.header.stamp = line_strip.header.stamp = rclcpp::Clock().now();
     sphere.type = visualization_msgs::msg::Marker::SPHERE_LIST;
     line_strip.type = visualization_msgs::msg::Marker::LINE_STRIP;
@@ -122,7 +125,7 @@ namespace ego_planner
   void PlanningVisualization::displayGoalPoint(Eigen::Vector3d goal_point, Eigen::Vector4d color, const double scale, int id)
   {
     visualization_msgs::msg::Marker sphere;
-    sphere.header.frame_id = "world";
+    sphere.header.frame_id = "orbslam_map";
     sphere.header.stamp = rclcpp::Clock().now();
     sphere.type = visualization_msgs::msg::Marker::SPHERE;
     sphere.action = visualization_msgs::msg::Marker::ADD;

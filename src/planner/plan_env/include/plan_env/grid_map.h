@@ -6,6 +6,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <nav_msgs/msg/odometry.hpp>
 #include <queue>
@@ -77,6 +78,8 @@ struct MappingParameters
   double prob_hit_log_, prob_miss_log_, clamp_min_log_, clamp_max_log_,
       min_occupancy_log_;                  // logit of occupancy probability
   double min_ray_length_, max_ray_length_; // range of doing raycasting
+  int min_obstacle_hits_;
+  double self_clearance_;
 
   /* local map update and clear */
   int local_map_margin_;
@@ -100,9 +103,10 @@ struct MappingData
 
   // camera position and pose data
 
-  Eigen::Vector3d camera_pos_, last_camera_pos_;
+  Eigen::Vector3d camera_pos_, last_camera_pos_, vehicle_pos_;
   Eigen::Matrix3d camera_r_m_, last_camera_r_m_;
   Eigen::Matrix4d cam2body_;
+  bool has_vehicle_pose_;
 
   // depth image data
 
@@ -112,7 +116,7 @@ struct MappingData
   // flags of map state
 
   bool occ_need_update_, local_updated_;
-  bool has_first_depth_;
+  bool has_first_depth_, has_depth_image_;
   bool has_odom_, has_cloud_;
 
   // odom_depth_timeout_
@@ -160,6 +164,10 @@ public:
   // occupancy map management
   void resetBuffer();
   void resetBuffer(Eigen::Vector3d min, Eigen::Vector3d max);
+  // Replace the probabilistic history with the current camera observation.
+  // AirSim monocular navigation uses a rolling front-view map, not a global
+  // accumulated occupancy map.
+  void resetObservationBuffer();
 
   inline void posToIndex(const Eigen::Vector3d &pos, Eigen::Vector3i &id);
   inline void indexToPos(const Eigen::Vector3i &id, Eigen::Vector3d &pos);
@@ -218,6 +226,11 @@ private:
   // main update process
   void projectDepthImage();
   void raycastProcess();
+  // Keep the finite voxel storage centered around the vehicle.  The planner
+  // still uses the unchanged world frame; only voxel-index to world mapping
+  // is shifted when the vehicle approaches the storage boundary.
+  void recenterMapIfNeeded();
+  void updateLocalBounds();
   void clearAndInflateLocalMap();
 
   inline void inflatePoint(const Eigen::Vector3i &pt, int step, vector<Eigen::Vector3i> &pts);

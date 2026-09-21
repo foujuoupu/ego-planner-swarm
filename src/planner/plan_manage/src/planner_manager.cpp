@@ -20,6 +20,10 @@ namespace ego_planner
     node->declare_parameter("manager/planning_horizon", 5.0);
     node->declare_parameter("manager/use_distinctive_trajs", false);
     node->declare_parameter("manager/drone_id", -1);
+    node->declare_parameter("manager/astar_pool_size_x", 100);
+    node->declare_parameter("manager/astar_pool_size_y", 100);
+    node->declare_parameter("manager/astar_pool_size_z", 60);
+    node->declare_parameter("manager/astar_endpoint_search_distance", 1.0);
 
     node->get_parameter("manager/max_vel", pp_.max_vel_);
     node->get_parameter("manager/max_acc", pp_.max_acc_);
@@ -29,6 +33,12 @@ namespace ego_planner
     node->get_parameter("manager/planning_horizon", pp_.planning_horizen_);
     node->get_parameter("manager/use_distinctive_trajs", pp_.use_distinctive_trajs);
     node->get_parameter("manager/drone_id", pp_.drone_id);
+    int astar_pool_size_x, astar_pool_size_y, astar_pool_size_z;
+    double astar_endpoint_search_distance;
+    node->get_parameter("manager/astar_pool_size_x", astar_pool_size_x);
+    node->get_parameter("manager/astar_pool_size_y", astar_pool_size_y);
+    node->get_parameter("manager/astar_pool_size_z", astar_pool_size_z);
+    node->get_parameter("manager/astar_endpoint_search_distance", astar_endpoint_search_distance);
 
     local_data_.traj_id_ = 0;
     grid_map_.reset(new GridMap);
@@ -40,7 +50,12 @@ namespace ego_planner
     bspline_optimizer_->setParam(node);
     bspline_optimizer_->setEnvironment(grid_map_, obj_predictor_);
     bspline_optimizer_->a_star_.reset(new AStar);
-    bspline_optimizer_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
+    const Eigen::Vector3i astar_pool_size(
+        std::max(astar_pool_size_x, 10),
+        std::max(astar_pool_size_y, 10),
+        std::max(astar_pool_size_z, 10));
+    bspline_optimizer_->a_star_->initGridMap(
+        grid_map_, astar_pool_size, astar_endpoint_search_distance);
 
     visualization_ = vis;
   }

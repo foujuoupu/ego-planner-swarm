@@ -947,6 +947,12 @@ namespace ego_planner
   {
     double t;
 
+    // A short rolling goal can have a duration exactly divisible by t_step.
+    // Default to the real endpoint so the equality boundary below can never
+    // leave local_target_pt_ at its stale/default value.
+    local_target_pt_ = end_pt_;
+    local_target_vel_ = end_vel_;
+
     double t_step = planning_horizen_ / 20 / planner_manager_->pp_.max_vel_;
     double dist_min = 9999, dist_min_t = 0.0;
     for (t = planner_manager_->global_data_.last_progress_time_; t < planner_manager_->global_data_.global_duration_; t += t_step)
@@ -984,7 +990,7 @@ namespace ego_planner
         break;
       }
     }
-    if (t > planner_manager_->global_data_.global_duration_) // Last global point
+    if (t >= planner_manager_->global_data_.global_duration_) // Last global point
     {
       local_target_pt_ = end_pt_;
       planner_manager_->global_data_.last_progress_time_ = planner_manager_->global_data_.global_duration_;

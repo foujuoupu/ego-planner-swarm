@@ -64,6 +64,7 @@ private:
 	std::vector<GridNodePtr> retrievePath(GridNodePtr current);
 
 	double step_size_, inv_step_size_;
+	double endpoint_search_distance_{2.0};
 	Eigen::Vector3d center_;
 	Eigen::Vector3i CENTER_IDX_, POOL_SIZE_;
 	const double tie_breaker_ = 1.0 + 1.0 / 10000;
@@ -81,7 +82,8 @@ public:
 	AStar(){};
 	~AStar();
 
-	void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);
+	void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size,
+	                 double endpoint_search_distance = 2.0);
 
 	bool AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);
 

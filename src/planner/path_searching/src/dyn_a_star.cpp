@@ -11,10 +11,12 @@ AStar::~AStar()
                 delete GridNodeMap_[i][j][k];
 }
 
-void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size)
+void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size,
+                        double endpoint_search_distance)
 {
     POOL_SIZE_ = pool_size;
     CENTER_IDX_ = pool_size / 2;
+    endpoint_search_distance_ = std::max(endpoint_search_distance, 0.1);
 
     GridNodeMap_ = new GridNodePtr **[POOL_SIZE_(0)];
     for (int i = 0; i < POOL_SIZE_(0); i++)
@@ -95,24 +97,43 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
 
     if (checkOccupancy(Index2Coord(start_idx)))
     {
-        // RCLCPP_WARN(rclcpp::get_logger("ConvertToIndexAndAdjustStartEndPoints"), "Start point is insdide an obstacle.");
-        do
+        const Vector3d delta = start_pt - end_pt;
+        if (delta.norm() < 1e-6)
+            return false;
+        const Vector3d step = delta.normalized() * step_size_;
+        const int max_adjustments = std::max(
+            1, static_cast<int>(ceil(endpoint_search_distance_ / step_size_)));
+        int adjustments = 0;
+        while (checkOccupancy(Index2Coord(start_idx)))
         {
-            start_pt = (start_pt - end_pt).normalized() * step_size_ + start_pt;
+            if (++adjustments > max_adjustments)
+                return false;
+            start_pt += step;
             if (!Coord2Index(start_pt, start_idx))
                 return false;
-        } while (checkOccupancy(Index2Coord(start_idx)));
+        }
     }
 
     if (checkOccupancy(Index2Coord(end_idx)))
     {
-        // RCLCPP_WARN(rclcpp::get_logger("ConvertToIndexAndAdjustStartEndPoints"), "End point is insdide an obstacle.");
-        do
+        const Vector3d delta = end_pt - start_pt;
+        if (delta.norm() < 1e-6)
+            return false;
+        // Keep the goal beyond a finite-width obstacle so A* can route around
+        // it. Bound the search instead of walking indefinitely through an
+        // erroneous occupied region and leaving the preallocated pool.
+        const Vector3d step = delta.normalized() * step_size_;
+        const int max_adjustments = std::max(
+            1, static_cast<int>(ceil(endpoint_search_distance_ / step_size_)));
+        int adjustments = 0;
+        while (checkOccupancy(Index2Coord(end_idx)))
         {
-            end_pt = (end_pt - start_pt).normalized() * step_size_ + end_pt;
+            if (++adjustments > max_adjustments)
+                return false;
+            end_pt += step;
             if (!Coord2Index(end_pt, end_idx))
                 return false;
-        } while (checkOccupancy(Index2Coord(end_idx)));
+        }
     }
 
     return true;
