@@ -59,6 +59,7 @@ struct MappingParameters
   double obstacles_inflation_;
   string frame_id_;
   int pose_type_;
+  bool cloud_camera_pose_;
 
   /* camera parameters */
   double cx_, cy_, fx_, fy_;
@@ -217,6 +218,8 @@ private:
   void extrinsicCallback(const nav_msgs::msg::Odometry::ConstPtr &odom);
   void depthOdomCallback(const sensor_msgs::msg::Image::ConstPtr &img, const nav_msgs::msg::Odometry::ConstPtr &odom);
   void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &img);
+  void cloudPoseCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &cloud,
+                         const geometry_msgs::msg::PoseStamped::ConstPtr &pose);
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom);
 
   // update occupancy by raycasting
@@ -254,6 +257,11 @@ private:
   std::shared_ptr<message_filters::Subscriber<nav_msgs::msg::Odometry>> odom_sub_;
   SynchronizerImagePose sync_image_pose_;
   SynchronizerImageOdom sync_image_odom_;
+  using SyncPolicyCloudPose = message_filters::sync_policies::ExactTime<
+      sensor_msgs::msg::PointCloud2, geometry_msgs::msg::PoseStamped>;
+  std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>> cloud_sub_;
+  std::shared_ptr<message_filters::Subscriber<geometry_msgs::msg::PoseStamped>> cloud_pose_sub_;
+  std::shared_ptr<message_filters::Synchronizer<SyncPolicyCloudPose>> sync_cloud_pose_;
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr indep_cloud_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr indep_odom_sub_;

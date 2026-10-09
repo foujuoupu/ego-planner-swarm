@@ -884,7 +884,10 @@ namespace ego_planner
       bspline.knots.push_back(knots(i));
     }
 
-    if (startup_pub)
+    // Single-drone mode uses id=-1, not a swarm vector index. For an empty
+    // buffer, size()==id+1 would be true and traj.back() would dereference
+    // invalid memory immediately after the first successful plan.
+    if (startup_pub && planner_manager_->pp_.drone_id >= 0)
     {
       multi_bspline_msgs_buf_.drone_id_from = planner_manager_->pp_.drone_id; // zx-todo
       if ((int)multi_bspline_msgs_buf_.traj.size() == planner_manager_->pp_.drone_id + 1)
