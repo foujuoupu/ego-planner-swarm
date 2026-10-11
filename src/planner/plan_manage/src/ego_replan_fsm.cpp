@@ -61,6 +61,29 @@ namespace ego_planner
     planner_manager_->setDroneIdtoOpt();
 
     /* callback*/
+    localization_ready_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
+        "planning/localization_ready", rclcpp::QoS(1).reliable().transient_local(),
+        [this](std_msgs::msg::Bool::ConstSharedPtr message) {
+          if (!message->data && localization_ready_) {
+            have_target_ = false;
+            have_new_target_ = false;
+            planner_manager_->local_data_.start_time_ = rclcpp::Time(0, 0, RCL_SYSTEM_TIME);
+            changeFSMExecState(WAIT_TARGET, "LOCALIZATION_LOST");
+          }
+          localization_ready_ = message->data;
+        });
+    replan_request_sub_ = node_->create_subscription<std_msgs::msg::Empty>(
+        "planning/replan_request", 10,
+        [this](std_msgs::msg::Empty::ConstSharedPtr) {
+          if (!localization_ready_ || !have_odom_ || !have_target_)
+            return;
+          // The actuator may have held position while the spline clock kept
+          // advancing. Rebuild the seed and start at measured odometry.
+          const Eigen::Vector3d target = end_pt_;
+          const Eigen::Vector3d velocity = end_vel_;
+          planNextWaypoint(target, velocity);
+          changeFSMExecState(GEN_NEW_TRAJ, "ACTUATOR_RECOVERY");
+        });
     exec_timer_ = node_->create_wall_timer(std::chrono::milliseconds(10),
                                            std::bind(&EGOReplanFSM::execFSMCallback, this));
 
@@ -239,6 +262,8 @@ namespace ego_planner
 
   void EGOReplanFSM::waypointCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg)
   {
+    if (!localization_ready_ || !have_odom_)
+      return;
     if (!std::isfinite(msg->pose.position.x) ||
         !std::isfinite(msg->pose.position.y) ||
         !std::isfinite(msg->pose.position.z))
@@ -256,6 +281,8 @@ namespace ego_planner
 
   void EGOReplanFSM::rollingGoalCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg)
   {
+    if (!localization_ready_)
+      return;
     const auto &position = msg->pose.pose.position;
     const auto &velocity = msg->twist.twist.linear;
     if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z) ||
@@ -500,6 +527,23 @@ namespace ego_planner
       fsm_num = 0;
     }
 
+    if (!localization_ready_)
+      goto force_return;
+
+    // Localization can recover before the first synchronized cloud arrives.
+    // Accept the latest target, but never start/restart a spline against a
+    // cleared or stale observation buffer.
+    if (exec_state_ != INIT && exec_state_ != EMERGENCY_STOP &&
+        (!planner_manager_->grid_map_->hasDepthObservation() ||
+         planner_manager_->grid_map_->getOdomDepthTimeout()))
+    {
+      if (exec_state_ == WAIT_TARGET ||
+          planner_manager_->local_data_.start_time_.seconds() < 1e-5)
+        goto force_return;
+      flag_escape_emergency_ = true;
+      changeFSMExecState(EMERGENCY_STOP, "OBSERVATION_LOST");
+    }
+
     switch (exec_state_)
     {
     case INIT:
@@ -640,8 +684,23 @@ namespace ego_planner
       }
       else
       {
-        if (enable_fail_safe_ && odom_vel_.norm() < 0.1)
-          changeFSMExecState(GEN_NEW_TRAJ, "FSM");
+        if (enable_fail_safe_ && have_odom_ && have_target_ && have_trigger_ &&
+            planner_manager_->grid_map_->hasDepthObservation() &&
+            !planner_manager_->grid_map_->getOdomDepthTimeout() &&
+            odom_vel_.norm() < 0.1)
+        {
+          // The vehicle stopped while the old spline clock advanced. Seed
+          // recovery from measured odometry, including the latest target.
+          if (planner_manager_->planGlobalTraj(
+                  odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_,
+                  end_vel_, Eigen::Vector3d::Zero()))
+          {
+            have_new_target_ = true;
+            RCLCPP_INFO(node_->get_logger(),
+                        "Observation restored; replanning from current odometry");
+            changeFSMExecState(GEN_NEW_TRAJ, "OBSERVATION_RECOVERY");
+          }
+        }
       }
 
       flag_escape_emergency_ = false;
@@ -725,16 +784,19 @@ namespace ego_planner
     LocalTrajData *info = &planner_manager_->local_data_;
     auto map = planner_manager_->grid_map_;
     
-    if (exec_state_ == WAIT_TARGET || info->start_time_.seconds() < 1e-5)
+    if (!localization_ready_ || exec_state_ == WAIT_TARGET ||
+        exec_state_ == EMERGENCY_STOP || info->start_time_.seconds() < 1e-5)
       return;
 
     /* ---------- check lost of depth ---------- */
-    if (map->getOdomDepthTimeout())
+    if (!map->hasDepthObservation() || map->getOdomDepthTimeout())
     {
       RCLCPP_ERROR(node_->get_logger(), "Depth Lost! EMERGENCY_STOP");
 
-      enable_fail_safe_ = false;
+      flag_escape_emergency_ = true;
       changeFSMExecState(EMERGENCY_STOP, "SAFETY");
+      // Do not collision-check/replan against the cleared map in this callback.
+      return;
     }
 
     /* ---------- check trajectory ---------- */

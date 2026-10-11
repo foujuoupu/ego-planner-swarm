@@ -194,6 +194,19 @@ void GridMap::initMap(rclcpp::Node::SharedPtr node)
 
   indep_odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
       "grid_map/odom", 10, std::bind(&GridMap::odomCallback, this, std::placeholders::_1));
+  localization_ready_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
+      "grid_map/localization_ready", rclcpp::QoS(1).reliable().transient_local(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr message) {
+        if (!message->data && localization_ready_) {
+          resetObservationBuffer();
+          md_.has_cloud_ = false;
+          md_.has_depth_image_ = false;
+          md_.proj_points_cnt = 0;
+          md_.occ_need_update_ = false;
+          md_.flag_depth_odom_timeout_ = true;
+        }
+        localization_ready_ = message->data;
+      });
 
   // 定时器
   occ_timer_ = node_->create_wall_timer(
@@ -1025,6 +1038,8 @@ void GridMap::cloudPoseCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &c
 
 void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &img)
 {
+  if (!localization_ready_)
+    return;
   pcl::PointCloud<pcl::PointXYZ> latest_cloud;
   pcl::fromROSMsg(*img, latest_cloud);
 

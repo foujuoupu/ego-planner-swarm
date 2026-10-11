@@ -4,6 +4,7 @@
 #include "quadrotor_msgs/msg/position_command.hpp"
 #include "std_msgs/msg/empty.hpp"
 #include "visualization_msgs/msg/marker.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <string>
 #include <utility>
@@ -17,6 +18,8 @@ double vel_gain[3] = {0, 0, 0};
 using ego_planner::UniformBspline;
 
 bool receive_traj_ = false;
+bool localization_ready_ = false;
+rclcpp::Time localization_invalid_before_(0, 0, RCL_ROS_TIME);
 vector<UniformBspline> traj_;
 double traj_duration_;
 rclcpp::Time start_time_;
@@ -30,6 +33,9 @@ std::string command_frame_id_;
 
 void bsplineCallback(traj_utils::msg::Bspline::ConstPtr msg)
 {
+  if (!localization_ready_ ||
+      rclcpp::Time(msg->start_time) <= localization_invalid_before_)
+    return;
   // parse pos traj
 
   Eigen::MatrixXd pos_pts(3, msg->pos_pts.size());
@@ -245,6 +251,17 @@ int main(int argc, char **argv)
       "planning/bspline",
       10,
       bsplineCallback);
+
+  auto ready_sub = node->create_subscription<std_msgs::msg::Bool>(
+      "planning/localization_ready", rclcpp::QoS(1).reliable().transient_local(),
+      [node](std_msgs::msg::Bool::ConstSharedPtr message) {
+        localization_ready_ = message->data;
+        if (!localization_ready_) {
+          receive_traj_ = false;
+          traj_.clear();
+          localization_invalid_before_ = node->now();
+        }
+      });
 
   pos_cmd_pub = node->create_publisher<quadrotor_msgs::msg::PositionCommand>(
       "/position_cmd",

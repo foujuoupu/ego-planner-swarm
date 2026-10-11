@@ -13,6 +13,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <tuple>
 #include <visualization_msgs/msg/marker.hpp>
+#include <std_msgs/msg/bool.hpp>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -265,6 +266,8 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr indep_cloud_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr indep_odom_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr localization_ready_sub_;
+  bool localization_ready_{true};
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr extrinsic_sub_;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;

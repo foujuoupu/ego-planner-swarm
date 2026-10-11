@@ -9,6 +9,7 @@
 #include "sensor_msgs/msg/imu.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include <vector>
 #include "visualization_msgs/msg/marker.hpp"
 
@@ -78,7 +79,7 @@ namespace ego_planner
     std::vector<Eigen::Vector3d> wps_;
     int current_wp_;
 
-    bool flag_escape_emergency_;
+    bool flag_escape_emergency_{true};
 
     /* ROS utils */
     rclcpp::Node::SharedPtr node_;
@@ -86,6 +87,9 @@ namespace ego_planner
 
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr rolling_goal_sub_;
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr replan_request_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr localization_ready_sub_;
+    bool localization_ready_{true};
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_sub_;
     rclcpp::Subscription<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_sub_;
