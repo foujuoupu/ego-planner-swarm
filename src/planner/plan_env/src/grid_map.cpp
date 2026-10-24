@@ -276,6 +276,7 @@ void GridMap::resetBuffer(Eigen::Vector3d min_pos, Eigen::Vector3d max_pos)
 
 void GridMap::resetObservationBuffer()
 {
+  md_.observation_stamp_ = builtin_interfaces::msg::Time();
   const double unknown_log = mp_.clamp_min_log_ - mp_.unknown_flag_;
   std::fill(md_.occupancy_buffer_.begin(), md_.occupancy_buffer_.end(), unknown_log);
   std::fill(md_.occupancy_buffer_inflate_.begin(),
@@ -697,6 +698,7 @@ void GridMap::recenterMapIfNeeded()
   md_.local_updated_ = false;
   md_.occ_need_update_ = false;
   md_.last_occ_update_time_ = node_->now();
+  md_.observation_stamp_ = builtin_interfaces::msg::Time();
   md_.local_bound_min_ = Eigen::Vector3i::Zero();
   md_.local_bound_max_ = mp_.map_voxel_num_ - Eigen::Vector3i::Ones();
 
@@ -939,6 +941,7 @@ void GridMap::updateOccupancyCallback()
   if (md_.local_updated_)
     clearAndInflateLocalMap();
 
+  md_.observation_stamp_ = md_.pending_depth_stamp_;
   // t4 = ros::Time::now();
 
   // cout << setprecision(7);
@@ -988,6 +991,7 @@ void GridMap::depthPoseCallback(const sensor_msgs::msg::Image::ConstPtr &img,
   recenterMapIfNeeded();
   updateLocalBounds();
   resetObservationBuffer();
+  md_.pending_depth_stamp_ = img->header.stamp;
   if (isInMap(md_.camera_pos_))
   {
     md_.has_odom_ = true;
@@ -1083,6 +1087,7 @@ void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &img)
   if (md_.local_updated_)
     clearAndInflateLocalMap();
   md_.local_updated_ = false;
+  md_.observation_stamp_ = img->header.stamp;
 }
 
 void GridMap::publishMap()
@@ -1126,12 +1131,9 @@ void GridMap::publishMap()
   sensor_msgs::msg::PointCloud2 cloud_msg;
 
   pcl::toROSMsg(cloud, cloud_msg);
-  // PCL clouds do not carry a ROS2 header stamp by default. RViz's message
-  // filter otherwise sees time=0 and keeps the map queued while waiting for a
-  // matching transform, eventually dropping it when the queue fills.
-  const int64_t stamp_ns = node_->get_clock()->now().nanoseconds();
-  cloud_msg.header.stamp.sec = static_cast<int32_t>(stamp_ns / 1000000000LL);
-  cloud_msg.header.stamp.nanosec = static_cast<uint32_t>(stamp_ns % 1000000000LL);
+  // Keep the input acquisition stamp: consumers can pair this occupancy with
+  // the depth that produced it instead of guessing from publication latency.
+  cloud_msg.header.stamp = md_.observation_stamp_;
   cloud_msg.header.frame_id = mp_.frame_id_;
   map_pub_->publish(cloud_msg);
 }
@@ -1180,9 +1182,7 @@ void GridMap::publishMapInflate(bool all_info)
   sensor_msgs::msg::PointCloud2 cloud_msg;
 
   pcl::toROSMsg(cloud, cloud_msg);
-  const int64_t stamp_ns = node_->get_clock()->now().nanoseconds();
-  cloud_msg.header.stamp.sec = static_cast<int32_t>(stamp_ns / 1000000000LL);
-  cloud_msg.header.stamp.nanosec = static_cast<uint32_t>(stamp_ns % 1000000000LL);
+  cloud_msg.header.stamp = md_.observation_stamp_;
   cloud_msg.header.frame_id = mp_.frame_id_;
   map_inf_pub_->publish(cloud_msg);
 
@@ -1241,6 +1241,7 @@ void GridMap::depthOdomCallback(const sensor_msgs::msg::Image::ConstPtr &img,
   md_.camera_r_m_ = cam_T.block<3, 3>(0, 0);
   updateLocalBounds();
   resetObservationBuffer();
+  md_.pending_depth_stamp_ = img->header.stamp;
 
   /* get depth image */
   cv_bridge::CvImagePtr cv_ptr;

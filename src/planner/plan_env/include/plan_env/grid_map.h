@@ -113,6 +113,8 @@ struct MappingData
   // depth image data
 
   cv::Mat depth_image_, last_depth_image_;
+  // Source acquisition time, distinct from the timeout's processing clock.
+  builtin_interfaces::msg::Time pending_depth_stamp_, observation_stamp_;
   int image_cnt_;
 
   // flags of map state
