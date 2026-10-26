@@ -23,7 +23,11 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
+#if __has_include(<cv_bridge/cv_bridge.hpp>)
+#include <cv_bridge/cv_bridge.hpp>
+#else
 #include <cv_bridge/cv_bridge.h>
+#endif
 
 namespace detect
 {
