@@ -48,6 +48,9 @@ void GridMap::initMap(rclcpp::Node::SharedPtr node)
   node_->declare_parameter("grid_map/local_map_margin", 1);
   node_->declare_parameter("grid_map/ground_height", 1.0);
   node_->declare_parameter("grid_map/odom_depth_timeout", 1.0);
+  node_->declare_parameter("grid_map/obstacle_memory_sec", 0.0);
+  node_->declare_parameter("grid_map/obstacle_memory_radius", 5.0);
+  node_->declare_parameter("grid_map/map_epoch_topic", "");
 
   node_->get_parameter("grid_map/resolution", mp_.resolution_);
   node_->get_parameter("grid_map/map_size_x", x_size);
@@ -90,6 +93,10 @@ void GridMap::initMap(rclcpp::Node::SharedPtr node)
   node_->get_parameter("grid_map/local_map_margin", mp_.local_map_margin_);
   node_->get_parameter("grid_map/ground_height", mp_.ground_height_);
   node_->get_parameter("grid_map/odom_depth_timeout", mp_.odom_depth_timeout_);
+  node_->get_parameter("grid_map/obstacle_memory_sec", mp_.obstacle_memory_sec_);
+  node_->get_parameter("grid_map/obstacle_memory_radius", mp_.obstacle_memory_radius_);
+  mp_.obstacle_memory_sec_ = std::max(0.0, mp_.obstacle_memory_sec_);
+  mp_.obstacle_memory_radius_ = std::max(0.0, mp_.obstacle_memory_radius_);
 
   if (mp_.virtual_ceil_height_ - mp_.ground_height_ > z_size)
   {
@@ -98,6 +105,10 @@ void GridMap::initMap(rclcpp::Node::SharedPtr node)
 
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
+  // Use the same world voxel lattice before and after a rolling-window shift.
+  // Otherwise a free ray in the new window can miss the remembered voxel key.
+  mp_.map_origin_ = (mp_.map_origin_ * mp_.resolution_inv_).array().floor().matrix()
+      * mp_.resolution_;
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
 
   mp_.prob_hit_log_ = logit(mp_.p_hit_);
@@ -207,6 +218,11 @@ void GridMap::initMap(rclcpp::Node::SharedPtr node)
         }
         localization_ready_ = message->data;
       });
+  const auto epoch_topic = node_->get_parameter("grid_map/map_epoch_topic").as_string();
+  if (!epoch_topic.empty())
+    map_epoch_sub_ = node_->create_subscription<std_msgs::msg::Header>(
+        epoch_topic, rclcpp::QoS(1).reliable().transient_local(),
+        std::bind(&GridMap::mapEpochCallback, this, std::placeholders::_1));
 
   // 定时器
   occ_timer_ = node_->create_wall_timer(
@@ -274,8 +290,10 @@ void GridMap::resetBuffer(Eigen::Vector3d min_pos, Eigen::Vector3d max_pos)
       }
 }
 
-void GridMap::resetObservationBuffer()
+void GridMap::resetObservationBuffer(bool clear_memory)
 {
+  if (clear_memory)
+    md_.obstacle_memory_.clear();
   md_.observation_stamp_ = builtin_interfaces::msg::Time();
   const double unknown_log = mp_.clamp_min_log_ - mp_.unknown_flag_;
   std::fill(md_.occupancy_buffer_.begin(), md_.occupancy_buffer_.end(), unknown_log);
@@ -289,6 +307,80 @@ void GridMap::resetObservationBuffer()
     md_.cache_voxel_.pop();
   md_.raycast_num_ = 0;
   md_.local_updated_ = false;
+}
+
+double GridMap::monotonicSeconds()
+{
+  return std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+Eigen::Vector3i GridMap::memoryKey(const Eigen::Vector3d &position) const
+{
+  return (position * mp_.resolution_inv_).array().floor().cast<int>();
+}
+
+bool GridMap::isNewObservation(const builtin_interfaces::msg::Time &stamp) const
+{
+  const int64_t ns = rclcpp::Time(stamp).nanoseconds();
+  return localization_ready_ && ns > last_input_stamp_ns_ && ns >= map_epoch_stamp_ns_;
+}
+
+void GridMap::mapEpochCallback(const std_msgs::msg::Header::ConstSharedPtr message)
+{
+  if (message->frame_id == map_epoch_id_)
+    return;
+  map_epoch_id_ = message->frame_id;
+  map_epoch_stamp_ns_ = rclcpp::Time(message->stamp).nanoseconds();
+  last_input_stamp_ns_ = 0;
+  resetObservationBuffer();
+  md_.has_cloud_ = md_.has_depth_image_ = false;
+  md_.proj_points_cnt = 0;
+  md_.occ_need_update_ = false;
+  md_.flag_depth_odom_timeout_ = true;
+}
+
+bool GridMap::pruneObstacleMemory(double now, bool restore)
+{
+  if (md_.obstacle_memory_.empty())
+    return false;
+  bool changed = false;
+  const Eigen::Vector3d centre = md_.has_vehicle_pose_ ? md_.vehicle_pos_ : md_.camera_pos_;
+  for (auto it = md_.obstacle_memory_.begin(); it != md_.obstacle_memory_.end();)
+  {
+    const auto &entry = it->second;
+    const double distance = (entry.position - centre).norm();
+    Eigen::Vector3i id;
+    posToIndex(entry.position, id);
+    const bool keep = mp_.obstacle_memory_sec_ > 0.0 && now - entry.last_seen < mp_.obstacle_memory_sec_
+        && distance <= mp_.obstacle_memory_radius_ && distance > mp_.self_clearance_
+        && isInMap(entry.position)
+        && (id.array() >= md_.local_bound_min_.array()).all()
+        && (id.array() <= md_.local_bound_max_.array()).all();
+    if (!keep)
+    {
+      if (isInMap(id))
+        md_.occupancy_buffer_[toAddress(id)] = mp_.clamp_min_log_ - mp_.unknown_flag_;
+      it = md_.obstacle_memory_.erase(it);
+      changed = true;
+    }
+    else
+    {
+      if (restore)
+        md_.occupancy_buffer_[toAddress(id)] = mp_.clamp_max_log_;
+      ++it;
+    }
+  }
+  return changed;
+}
+
+void GridMap::prepareObservation()
+{
+  resetObservationBuffer(false);
+  pruneObstacleMemory(monotonicSeconds(), true);
+  // Also rebuild inflation for an empty new cloud: retained obstacles still
+  // protect the sides, and expired entries must disappear from planning.
+  md_.local_updated_ = true;
 }
 
 int GridMap::setCacheOccupancy(Eigen::Vector3d pos, int occ)
@@ -463,7 +555,8 @@ void GridMap::raycastProcess()
   {
     RCLCPP_WARN_THROTTLE(
         node_->get_logger(), *node_->get_clock(), 3000,
-        "Current depth frame produced no projected points; local map is empty");
+        "Current depth frame produced no projected points; retaining %zu nearby obstacles",
+        md_.obstacle_memory_.size());
     return;
   }
 
@@ -594,6 +687,8 @@ void GridMap::raycastProcess()
 
   int occupied_voxels = 0;
   double nearest_obstacle = std::numeric_limits<double>::infinity();
+  const double observed_at = monotonicSeconds();
+  const Eigen::Vector3d memory_centre = md_.has_vehicle_pose_ ? md_.vehicle_pos_ : md_.camera_pos_;
 
   while (!md_.cache_voxel_.empty())
   {
@@ -607,6 +702,7 @@ void GridMap::raycastProcess()
     // isolated endpoints that would otherwise inflate around the vehicle.
     const bool occupied =
         md_.count_hit_[idx_ctns] >= mp_.min_obstacle_hits_;
+    const bool observed_free = md_.count_hit_[idx_ctns] == 0;
 
     md_.count_hit_[idx_ctns] = md_.count_hit_and_miss_[idx_ctns] = 0;
 
@@ -619,18 +715,27 @@ void GridMap::raycastProcess()
       continue;
     }
 
-    // This map intentionally represents only the current camera observation.
-    // A Bayesian update starting from the unknown/minimum value requires
-    // several frames before a depth endpoint becomes occupied, which defeats
-    // a single-frame rolling frustum and lets EGO plan through new obstacles.
-    // Resolve this frame's ray votes directly instead: endpoints are occupied
-    // and traversed voxels are known free. The next depth callback clears both.
-    md_.occupancy_buffer_[idx_ctns] =
-        occupied ? mp_.clamp_max_log_ : mp_.clamp_min_log_;
+    Eigen::Vector3d pos;
+    indexToPos(idx, pos);
+    const auto key = memoryKey(pos);
+    // Occupied endpoints win over traversal votes in the same frame. Only
+    // actual free rays clear memory; weak rejected endpoints are not proof
+    // that an old surface is free.
+    if (occupied)
+      md_.occupancy_buffer_[idx_ctns] = mp_.clamp_max_log_;
+    else if (observed_free)
+    {
+      md_.occupancy_buffer_[idx_ctns] = mp_.clamp_min_log_;
+      md_.obstacle_memory_.erase(key);
+    }
     if (occupied)
     {
-      Eigen::Vector3d pos;
-      indexToPos(idx, pos);
+      const double distance = (pos - memory_centre).norm();
+      if (mp_.obstacle_memory_sec_ > 0.0 && distance <= mp_.obstacle_memory_radius_
+          && distance > mp_.self_clearance_)
+        md_.obstacle_memory_[key] = {pos, observed_at};
+      else
+        md_.obstacle_memory_.erase(key);
       nearest_obstacle = std::min(nearest_obstacle,
                                   (pos - md_.camera_pos_).norm());
       ++occupied_voxels;
@@ -639,8 +744,9 @@ void GridMap::raycastProcess()
 
   RCLCPP_INFO_THROTTLE(
       node_->get_logger(), *node_->get_clock(), 3000,
-      "Front-view map: depth_points=%d occupied_voxels=%d nearest=%.2f m",
+      "Local map: depth_points=%d occupied_voxels=%d nearby_memory=%zu nearest=%.2f m",
       md_.proj_points_cnt, occupied_voxels,
+      md_.obstacle_memory_.size(),
       std::isfinite(nearest_obstacle) ? nearest_obstacle : -1.0);
 }
 
@@ -833,13 +939,10 @@ void GridMap::clearAndInflateLocalMap()
   // inf_pts.resize(4 * inf_step + 3);
   Eigen::Vector3i inf_pt;
 
-  // clear outdated data
-  for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
-    for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y)
-      for (int z = md_.local_bound_min_(2); z <= md_.local_bound_max_(2); ++z)
-      {
-        md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 0;
-      }
+  // Expiry can rebuild between observations after the bounds moved. Clear all
+  // inflated cells so an expired side obstacle cannot leave an inflated trail.
+  std::fill(md_.occupancy_buffer_inflate_.begin(),
+            md_.occupancy_buffer_inflate_.end(), 0);
 
   // inflate obstacles
   for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
@@ -908,6 +1011,10 @@ void GridMap::updateOccupancyCallback()
 
   if (!md_.occ_need_update_)
   {
+    // Expiry does not depend on another depth frame arriving. Never advance
+    // observation_stamp_ here: an aging map is not a fresh observation.
+    if (pruneObstacleMemory(monotonicSeconds(), false))
+      clearAndInflateLocalMap();
     if ((md_.flag_use_depth_fusion || md_.has_cloud_) &&
         (node_->now() - md_.last_occ_update_time_).seconds() > mp_.odom_depth_timeout_)
     {
@@ -961,6 +1068,8 @@ void GridMap::updateOccupancyCallback()
 void GridMap::depthPoseCallback(const sensor_msgs::msg::Image::ConstPtr &img,
                                 const geometry_msgs::msg::PoseStamped::ConstPtr &pose)
 {
+  if (!isNewObservation(img->header.stamp))
+    return;
   /* get depth image */
   cv_bridge::CvImagePtr cv_ptr;
   cv_ptr = cv_bridge::toCvCopy(img, img->encoding);
@@ -990,7 +1099,8 @@ void GridMap::depthPoseCallback(const sensor_msgs::msg::Image::ConstPtr &img,
       md_.camera_pos_(1), md_.camera_pos_(2));
   recenterMapIfNeeded();
   updateLocalBounds();
-  resetObservationBuffer();
+  prepareObservation();
+  last_input_stamp_ns_ = rclcpp::Time(img->header.stamp).nanoseconds();
   md_.pending_depth_stamp_ = img->header.stamp;
   if (isInMap(md_.camera_pos_))
   {
@@ -1028,7 +1138,7 @@ void GridMap::odomCallback(const nav_msgs::msg::Odometry::SharedPtr odom)
 void GridMap::cloudPoseCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &cloud,
                                const geometry_msgs::msg::PoseStamped::ConstPtr &pose)
 {
-  if (pose->header.frame_id != mp_.frame_id_ || !md_.has_odom_)
+  if (pose->header.frame_id != mp_.frame_id_ || !md_.has_odom_ || !isNewObservation(cloud->header.stamp))
     return;
   const auto &p = pose->pose.position;
   if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
@@ -1042,7 +1152,7 @@ void GridMap::cloudPoseCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &c
 
 void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &img)
 {
-  if (!localization_ready_)
+  if (!isNewObservation(img->header.stamp))
     return;
   pcl::PointCloud<pcl::PointXYZ> latest_cloud;
   pcl::fromROSMsg(*img, latest_cloud);
@@ -1066,7 +1176,8 @@ void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &img)
   updateLocalBounds();
   md_.has_cloud_ = true;
   md_.flag_depth_odom_timeout_ = false;
-  resetObservationBuffer();
+  prepareObservation();
+  last_input_stamp_ns_ = rclcpp::Time(img->header.stamp).nanoseconds();
   md_.proj_points_cnt = 0;
   md_.occ_need_update_ = false;
   md_.last_occ_update_time_ = node_->now();
@@ -1221,6 +1332,8 @@ void GridMap::extrinsicCallback(const nav_msgs::msg::Odometry::ConstPtr &odom)
 void GridMap::depthOdomCallback(const sensor_msgs::msg::Image::ConstPtr &img,
                                 const nav_msgs::msg::Odometry::ConstPtr &odom)
 {
+  if (!isNewObservation(img->header.stamp))
+    return;
   /* get pose */
   Eigen::Quaterniond body_q = Eigen::Quaterniond(odom->pose.pose.orientation.w,
                                                  odom->pose.pose.orientation.x,
@@ -1240,7 +1353,8 @@ void GridMap::depthOdomCallback(const sensor_msgs::msg::Image::ConstPtr &img,
   md_.camera_pos_(2) = cam_T(2, 3);
   md_.camera_r_m_ = cam_T.block<3, 3>(0, 0);
   updateLocalBounds();
-  resetObservationBuffer();
+  prepareObservation();
+  last_input_stamp_ns_ = rclcpp::Time(img->header.stamp).nanoseconds();
   md_.pending_depth_stamp_ = img->header.stamp;
 
   /* get depth image */

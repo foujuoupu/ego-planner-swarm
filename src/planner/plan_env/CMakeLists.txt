@@ -65,6 +65,14 @@ target_link_libraries( plan_env
   ${OpenCV_LIBS}
 )  
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_obstacle_memory test/test_obstacle_memory.cpp)
+  target_link_libraries(test_obstacle_memory plan_env)
+  ament_target_dependencies(test_obstacle_memory rclcpp std_msgs geometry_msgs
+    nav_msgs cv_bridge message_filters pcl_conversions)
+endif()
+
 add_executable(obj_generator
     src/obj_generator.cpp 
 )

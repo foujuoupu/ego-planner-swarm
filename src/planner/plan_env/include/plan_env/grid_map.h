@@ -12,8 +12,11 @@
 #include <queue>
 #include <rclcpp/rclcpp.hpp>
 #include <tuple>
+#include <chrono>
+#include <unordered_map>
 #include <visualization_msgs/msg/marker.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/header.hpp>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -67,6 +70,7 @@ struct MappingParameters
 
   /* time out */
   double odom_depth_timeout_;
+  double obstacle_memory_sec_, obstacle_memory_radius_;
 
   /* depth image projection filtering */
   double depth_filter_maxdist_, depth_filter_mindist_, depth_filter_tolerance_;
@@ -98,6 +102,14 @@ struct MappingParameters
 
 struct MappingData
 {
+  struct RememberedObstacle
+  {
+    Eigen::Vector3d position;
+    double last_seen;
+  };
+  // Sparse world voxel keys survive movement of the finite storage origin.
+  std::unordered_map<Eigen::Vector3i, RememberedObstacle,
+                     matrix_hash<Eigen::Vector3i>> obstacle_memory_;
   // main map data, occupancy of each voxel and Euclidean distance
 
   std::vector<double> occupancy_buffer_;
@@ -168,10 +180,9 @@ public:
   // occupancy map management
   void resetBuffer();
   void resetBuffer(Eigen::Vector3d min, Eigen::Vector3d max);
-  // Replace the probabilistic history with the current camera observation.
-  // AirSim monocular navigation uses a rolling front-view map, not a global
-  // accumulated occupancy map.
-  void resetObservationBuffer();
+  // Full resets invalidate memory; normal observations restore only recent
+  // nearby obstacles before applying current free/occupied ray evidence.
+  void resetObservationBuffer(bool clear_memory = true);
 
   inline void posToIndex(const Eigen::Vector3d &pos, Eigen::Vector3i &id);
   inline void indexToPos(const Eigen::Vector3i &id, Eigen::Vector3d &pos);
@@ -212,6 +223,7 @@ public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 private:
+  friend class GridMapMemoryTestPeer;
   MappingParameters mp_;
   MappingData md_;
 
@@ -238,6 +250,12 @@ private:
   void recenterMapIfNeeded();
   void updateLocalBounds();
   void clearAndInflateLocalMap();
+  void prepareObservation();
+  bool pruneObstacleMemory(double now, bool restore);
+  Eigen::Vector3i memoryKey(const Eigen::Vector3d &position) const;
+  bool isNewObservation(const builtin_interfaces::msg::Time &stamp) const;
+  void mapEpochCallback(const std_msgs::msg::Header::ConstSharedPtr message);
+  static double monotonicSeconds();
 
   inline void inflatePoint(const Eigen::Vector3i &pt, int step, vector<Eigen::Vector3i> &pts);
   int setCacheOccupancy(Eigen::Vector3d pos, int occ);
@@ -270,6 +288,9 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr indep_odom_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr localization_ready_sub_;
   bool localization_ready_{true};
+  rclcpp::Subscription<std_msgs::msg::Header>::SharedPtr map_epoch_sub_;
+  std::string map_epoch_id_;
+  int64_t map_epoch_stamp_ns_{0}, last_input_stamp_ns_{0};
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr extrinsic_sub_;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
